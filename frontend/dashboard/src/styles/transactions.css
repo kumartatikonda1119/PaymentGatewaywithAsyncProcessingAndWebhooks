@@ -1,0 +1,39 @@
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.table th,
+.table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.table th {
+  background: #f3f4f6;
+  text-align: left;
+  font-size: 14px;
+  color: #4b5563;
+}
+
+.table tr:hover {
+  background: #f9fafb;
+}
+
+.status-success {
+  color: #15803d;
+  font-weight: bold;
+}
+
+.status-failed {
+  color: #b91c1c;
+  font-weight: bold;
+}
+
+.status-processing {
+  color: #d97706;
+  font-weight: bold;
+}

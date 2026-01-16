@@ -1,0 +1,39 @@
+.dashboard-title {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+
+.credentials {
+  display: grid;
+  gap: 12px;
+}
+
+.credentials div {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.credentials label {
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.stat-box {
+  padding: 16px;
+  border-radius: 12px;
+  text-align: center;
+  background: linear-gradient(180deg, #eef2ff, #e0e7ff);
+  font-size: 18px;
+  font-weight: bold;
+}

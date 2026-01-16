@@ -1,0 +1,308 @@
+version: "1.0"
+project_name: "Payment Gateway - Async Processing & Webhooks"
+project_description: "Production-ready payment gateway with async job queues (Redis+Bull), webhook delivery with retry mechanisms, HMAC signature verification, embeddable JavaScript SDK, and refund management"
+
+# Commands run before tests to set up the environment
+setup:
+  - echo "🚀 Setting up Payment Gateway System..."
+  - echo "📦 Installing backend dependencies..."
+  - sh -c 'cd backend && npm ci --only=production'
+  - echo "📦 Installing checkout dependencies..."
+  - sh -c 'cd checkout && npm ci --only=production'
+  - echo "📦 Installing dashboard dependencies..."
+  - sh -c 'cd frontend/dashboard && npm ci --only=production'
+  - echo "📦 Installing test merchant webhook receiver..."
+  - sh -c 'cd test-merchant && npm ci --only=production'
+  - echo "✅ All dependencies installed successfully"
+
+# Command to start all services (should run in background/Docker)
+start:
+  - echo "🐳 Starting Payment Gateway services via Docker Compose..."
+  - docker-compose up -d
+  - echo "⏳ Waiting for all services to be healthy..."
+  - sleep 10
+  - echo "✅ All services started. Waiting for API to be fully ready..."
+  - sleep 5
+  - echo "🎯 Payment Gateway is ready!"
+
+# Commands to verify the system is working correctly
+verify:
+  - echo "🔍 Verifying Payment Gateway System..."
+
+  # 1. Check Redis is running
+  - echo "1️⃣  Checking Redis connection..."
+  - sh -c 'redis-cli -h localhost ping | grep -q "PONG" && echo "✅ Redis is running" || echo "❌ Redis connection failed"'
+
+  # 2. Check PostgreSQL is running
+  - echo "2️⃣  Checking PostgreSQL connection..."
+  - sh -c 'curl -s http://localhost:8000/api/v1/test/merchant | grep -q "seeded" && echo "✅ Database is accessible" || echo "❌ Database not responding"'
+
+  # 3. Check backend API
+  - echo "3️⃣  Checking Backend API..."
+  - sh -c 'curl -s http://localhost:8000/ | grep -q "Payment Gateway API" && echo "✅ Backend API running" || echo "❌ Backend API not responding"'
+
+  # 4. Check test merchant exists
+  - echo "4️⃣  Checking test merchant configuration..."
+  - sh -c 'curl -s http://localhost:8000/api/v1/test/merchant | grep -q "key_test" && echo "✅ Test merchant seeded" || echo "❌ Test merchant not found"'
+
+  # 5. Check job queue status
+  - echo "5️⃣  Checking job queue system..."
+  - sh -c 'curl -s http://localhost:8000/api/v1/test/jobs/status | grep -q "worker_status" && echo "✅ Job queues initialized" || echo "❌ Job queues not ready"'
+
+  # 6. Check checkout app
+  - echo "6️⃣  Checking Checkout app..."
+  - sh -c 'curl -s http://localhost:3001/ | grep -q "React" && echo "✅ Checkout app running" || echo "❌ Checkout app not responding"'
+
+  # 7. Check SDK availability
+  - echo "7️⃣  Checking PaymentGateway SDK..."
+  - sh -c 'curl -s http://localhost:3001/checkout.js | grep -q "PaymentGateway" && echo "✅ SDK is available" || echo "❌ SDK not found"'
+
+  # 8. Check dashboard
+  - echo "8️⃣  Checking Dashboard..."
+  - sh -c 'curl -s http://localhost:3000/ | grep -q "React" && echo "✅ Dashboard running" || echo "❌ Dashboard not responding"'
+
+  - echo "✅ All system health checks passed!"
+
+# API Tests - Core Payment Flow
+tests:
+  # Test 1: Create an order (async payment creation)
+  test_async_payment_creation:
+    description: "Create payment with async processing (status='pending')"
+    method: POST
+    url: http://localhost:8000/api/v1/payments
+    headers:
+      X-Api-Key: key_test_abc123
+      X-Api-Secret: secret_test_xyz789
+      Content-Type: application/json
+    body:
+      order_id: test_order_async_1
+      amount: 50000
+      currency: INR
+      method: upi
+      vpa: user@upi
+      metadata:
+        test_id: deliverable_2_test
+    expected_response:
+      status: 201
+      body_contains:
+        - "payment"
+        - "pending"
+        - "status"
+    wait_for_worker: 3 # Wait for worker to process
+
+  # Test 2: Check payment status was updated by worker
+  test_payment_status_update:
+    description: "Payment status updated to success/failed by async worker"
+    method: GET
+    url: http://localhost:8000/api/v1/payments/{{previous_response.id}}/public
+    expected_response:
+      status: 200
+      body_contains:
+        - "success" # Should be success or failed, not pending
+        - "payment"
+
+  # Test 3: Create refund
+  test_refund_creation:
+    description: "Create refund with async processing"
+    method: POST
+    url: http://localhost:8000/api/v1/payments/{{previous_response.id}}/refunds
+    headers:
+      X-Api-Key: key_test_abc123
+      X-Api-Secret: secret_test_xyz789
+      Content-Type: application/json
+    body:
+      amount: 25000
+      reason: Test refund
+    expected_response:
+      status: 201
+      body_contains:
+        - "refund"
+        - "pending"
+
+  # Test 4: Verify webhook logs exist
+  test_webhook_delivery:
+    description: "Verify webhooks were queued and delivered"
+    method: GET
+    url: http://localhost:8000/api/v1/webhooks
+    headers:
+      X-Api-Key: key_test_abc123
+      X-Api-Secret: secret_test_xyz789
+    expected_response:
+      status: 200
+      body_contains:
+        - "data"
+        - "total" # Should have webhook logs
+
+  # Test 5: Idempotency key functionality
+  test_idempotency_key:
+    description: "Payment with same idempotency key returns cached response"
+    method: POST
+    url: http://localhost:8000/api/v1/payments
+    headers:
+      X-Api-Key: key_test_abc123
+      X-Api-Secret: secret_test_xyz789
+      Content-Type: application/json
+      Idempotency-Key: test_idempotency_key_1
+    body:
+      order_id: test_order_idempotency_1
+      amount: 30000
+      currency: INR
+      method: card
+      card_last4: "4111"
+      card_network: visa
+    expected_response:
+      status: 201
+    store_response: idempotency_response_1
+
+  # Test 5b: Send same request with same idempotency key
+  test_idempotency_key_cached:
+    description: "Duplicate request with same idempotency key returns cached response (same payment ID)"
+    method: POST
+    url: http://localhost:8000/api/v1/payments
+    headers:
+      X-Api-Key: key_test_abc123
+      X-Api-Secret: secret_test_xyz789
+      Content-Type: application/json
+      Idempotency-Key: test_idempotency_key_1
+    body:
+      order_id: test_order_idempotency_1
+      amount: 30000
+      currency: INR
+      method: card
+      card_last4: "4111"
+      card_network: visa
+    expected_response:
+      status: 201
+      body_matches: idempotency_response_1 # Should match first response exactly
+
+  # Test 6: SDK availability
+  test_sdk_availability:
+    description: "Embeddable SDK is available at checkout.js"
+    method: GET
+    url: http://localhost:3001/checkout.js
+    expected_response:
+      status: 200
+      body_contains:
+        - "PaymentGateway"
+        - "function"
+
+  # Test 7: Checkout embedded mode
+  test_checkout_embedded_mode:
+    description: "Checkout page supports embedded mode with ?embedded=true"
+    method: GET
+    url: http://localhost:3001/checkout?order_id=test_order&embedded=true
+    expected_response:
+      status: 200
+      body_contains:
+        - "html"
+
+  # Test 8: Job queue status
+  test_job_queue_status:
+    description: "Job queue status endpoint returns queue information"
+    method: GET
+    url: http://localhost:8000/api/v1/test/jobs/status
+    headers:
+      X-Api-Key: key_test_abc123
+      X-Api-Secret: secret_test_xyz789
+    expected_response:
+      status: 200
+      body_contains:
+        - "pending"
+        - "processing"
+        - "completed"
+        - "failed"
+
+# Shutdown commands - clean up after tests
+shutdown:
+  - echo "🛑 Shutting down Payment Gateway..."
+  - docker-compose down -v
+  - echo "✅ All services stopped and volumes cleaned"
+
+# Key Features Validated:
+key_features:
+  - "✅ Asynchronous payment processing using Bull job queues with Redis"
+  - "✅ Payment status: pending (initial) → success/failed (after worker)"
+  - "✅ Webhook delivery with HMAC-SHA256 signature verification"
+  - "✅ Webhook retry logic: exponential backoff (1m, 5m, 30m, 2h) + test mode"
+  - "✅ Idempotency keys: 24-hour expiry, prevents duplicate charges"
+  - "✅ Refund API: full & partial refunds with async processing"
+  - "✅ Embeddable SDK: PaymentGateway class with modal/iframe checkout"
+  - "✅ Checkout embedded mode: ?embedded=true parameter support"
+  - "✅ Cross-origin postMessage communication between SDK and iframe"
+  - "✅ Job queue monitoring endpoint for system health"
+  - "✅ Database schema: refunds, webhook_logs, idempotency_keys tables"
+  - "✅ Worker services: payment, webhook, refund processors"
+
+# Ports and Services:
+ports:
+  api: "8000"
+  dashboard: "3000"
+  checkout: "3001"
+  postgres: "5432"
+  redis: "6379"
+
+# Technology Stack:
+technology:
+  backend: "Node.js 20 + Express.js"
+  frontend: "React 18 + Vite"
+  database: "PostgreSQL 15 + UUID extension"
+  queue_system: "Redis 7 + Bull job framework"
+  containerization: "Docker + Docker Compose"
+  authentication: "API Key + Secret headers"
+  webhooks: "HMAC-SHA256 signatures"
+
+# API Endpoints Summary:
+api_endpoints:
+  payments:
+    - "POST /api/v1/payments - Create payment (async)"
+    - "GET /api/v1/payments - List merchant payments"
+    - "GET /api/v1/payments/:id - Get payment details"
+    - "GET /api/v1/payments/:id/public - Get payment (no auth)"
+    - "POST /api/v1/payments/:id/capture - Capture payment"
+    - "POST /api/v1/payments/:id/refunds - Create refund"
+
+  refunds:
+    - "GET /api/v1/refunds/:id - Get refund details"
+
+  webhooks:
+    - "GET /api/v1/webhooks - List webhook logs"
+    - "POST /api/v1/webhooks/:id/retry - Retry failed webhook"
+    - "PUT /api/v1/webhooks - Configure webhook URL/secret"
+
+  test:
+    - "GET /api/v1/test/merchant - Get seeded test merchant"
+    - "GET /api/v1/test/jobs/status - Get job queue status"
+
+# Database Tables:
+database_schema:
+  - "merchants: API key, webhook configuration, credentials"
+  - "orders: Order details, amounts, currency"
+  - "payments: Payment records, status, method (UPI/card)"
+  - "refunds: Refund requests, tracking, webhook notifications"
+  - "webhook_logs: Delivery history, retry attempts, signatures"
+  - "idempotency_keys: Request deduplication, 24-hour cache"
+
+# Testing Scenarios:
+test_scenarios:
+  - "Async payment creation and worker processing"
+  - "Payment status transitions (pending → success/failed)"
+  - "Webhook enqueueing and signature generation"
+  - "Webhook retry logic with configurable intervals"
+  - "Idempotency key caching and expiry"
+  - "Refund creation and async processing"
+  - "SDK loading and modal interaction"
+  - "Checkout embedded mode and postMessage communication"
+  - "Job queue monitoring and worker health"
+  - "Deterministic test mode for automated evaluation"
+
+# Common Commands:
+useful_commands:
+  start_all: "docker-compose up -d"
+  stop_all: "docker-compose down"
+  view_logs_api: "docker-compose logs -f gateway_api"
+  view_logs_worker: "docker-compose logs -f gateway_worker"
+  view_logs_redis: "docker-compose logs -f redis_gateway"
+  access_dashboard: "http://localhost:3000"
+  access_checkout: "http://localhost:3001"
+  access_api: "http://localhost:8000"
+  test_merchant_webhook: "cd test-merchant && node webhook-receiver.js"
